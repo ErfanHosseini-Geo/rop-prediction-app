@@ -6,3 +6,7 @@ xgboost
 matplotlib
 seaborn
 openpyxl
+shap
+scipy
+plotly
+
