@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import plotly.express as px
 import seaborn as sns
 import warnings
 
@@ -10,250 +9,200 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.impute import SimpleImputer
 
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="DataEnergy Dashboard", layout="wide")
+st.set_page_config(page_title="ROP Feature Importance Dashboard", layout="wide")
 
 # =========================
-# CSS - MATCH IMAGE STYLE
+# CSS
 # =========================
 st.markdown("""
 <style>
-/* App background */
 [data-testid="stAppViewContainer"] {
     background: #2b2f30;
 }
-
-/* Main content area */
 .main .block-container {
+    max-width: 1500px;
     padding-top: 1rem;
     padding-bottom: 1rem;
-    max-width: 1500px;
 }
-
-/* Sidebar */
 [data-testid="stSidebar"] {
     background: #2b2f30;
-    padding-top: 0.5rem;
 }
-[data-testid="stSidebar"] * {
-    color: #111 !important;
-}
-
-/* White boxes in sidebar */
-.sidebar-box {
-    background: #ffffff;
-    border: 1px solid #c9c9c9;
-    padding: 14px;
-    margin-bottom: 14px;
-    box-shadow: none;
-}
-
-.sidebar-title-box {
-    background: #ffffff;
-    border: 1px solid #c9c9c9;
-    padding: 16px 14px;
-    margin-bottom: 14px;
-}
-
-.sidebar-title-box h1 {
-    font-size: 20px;
-    color: #111111;
-    margin: 0;
-    line-height: 1.25;
-    font-weight: 700;
-}
-
-/* Fake logo area */
-.logo-box {
-    color: white;
-    font-size: 18px;
-    font-weight: bold;
-    margin-bottom: 12px;
-    padding-left: 4px;
-}
-.logo-blue { color: #2a79ff; }
-.logo-red { color: #e24a3b; }
-
-/* Main panel */
 .main-panel {
     background: #efefef;
     border: 1px solid #bdbdbd;
-    padding: 16px;
-    min-height: 80vh;
+    padding: 18px;
+    min-height: 85vh;
 }
-
-/* Chart boxes */
 .chart-box {
     background: #f8f7ea;
     border: 1px solid #d5d5c8;
     padding: 10px;
     margin-bottom: 14px;
 }
-
 .chart-title {
     text-align: center;
     font-size: 14px;
     font-weight: 700;
-    color: #222;
     margin-bottom: 6px;
+    color: #222;
 }
-
-/* Remove streamlit element spacing weirdness */
-div[data-testid="stVerticalBlock"] > div:has(.chart-box) {
-    margin-bottom: 0.5rem;
+.metric-box {
+    background: #f8f7ea;
+    border: 1px solid #d5d5c8;
+    padding: 12px;
+    text-align: center;
 }
-
-/* Checkbox/radio tweaks */
-.stCheckbox, .stRadio {
-    margin-bottom: 0.15rem;
+.metric-label {
+    font-size: 13px;
+    color: #555;
 }
-
-/* Select boxes inside sidebar */
-[data-testid="stSidebar"] .stSelectbox label,
-[data-testid="stSidebar"] .stRadio label,
-[data-testid="stSidebar"] .stMultiSelect label {
-    color: #111 !important;
-    font-weight: 600;
+.metric-value {
+    font-size: 24px;
+    font-weight: 800;
+    color: #111;
 }
-
-/* Buttons */
-.stButton > button {
-    width: 100%;
-    background: #1f2937;
+.logo-box {
     color: white;
-    border: 1px solid #111827;
-    border-radius: 0;
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 12px;
+}
+.sidebar-note {
+    color: white;
+    font-size: 14px;
+    margin-bottom: 12px;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================
-# SIDEBAR CONTENT
+# SIDEBAR
 # =========================
 with st.sidebar:
-    st.markdown('<div class="logo-box"><span class="logo-blue">◉◉</span> Data<span class="logo-red">Energy</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="logo-box">⛏️ ROP Analysis Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-note">Upload drilling data and evaluate feature importance for ROP prediction.</div>', unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class="sidebar-title-box">
-        <h1>Feature Importance:<br>NPHI Log Prediction</h1>
-    </div>
-    """, unsafe_allow_html=True)
-
-    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
+    uploaded_file = st.file_uploader("Upload Excel or CSV", type=["xlsx", "csv"])
 
 # =========================
-# SAMPLE DATA IF NO FILE
+# LOAD DATA
 # =========================
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-else:
-    np.random.seed(42)
-    n = 1200
-    depth = np.linspace(500, 3000, n)
-    df = pd.DataFrame({
-        "CALI": np.random.normal(10, 1.2, n),
-        "DEPTH_MD": depth,
-        "DTC": np.random.normal(80, 8, n),
-        "GR": np.random.normal(75, 20, n),
-        "PEF": np.random.normal(3, 0.6, n),
-        "RDEP": np.random.normal(15, 5, n),
-        "RHOB": np.random.normal(2.4, 0.12, n),
-        "RMED": np.random.normal(10, 3, n),
-        "ROP": np.random.normal(25, 7, n),
-    })
-    df["NPHI"] = (
-        0.25
-        + 0.0015 * df["GR"]
-        - 0.002 * df["RHOB"] * 10
-        + 0.0008 * df["DTC"]
-        + np.random.normal(0, 0.03, n)
-    )
-    df["NPHI"] = np.clip(df["NPHI"], 0.02, 0.75)
+def load_data(file):
+    if file is None:
+        np.random.seed(42)
+        n = 1500
+        depth = np.linspace(1000, 4500, n)
 
-target_col = "NPHI"
+        df = pd.DataFrame({
+            "Depth": depth,
+            "WOB": np.random.normal(25, 5, n),
+            "RPM": np.random.normal(120, 20, n),
+            "Torque": np.random.normal(12, 2.5, n),
+            "SPP": np.random.normal(2500, 300, n),
+            "FlowRate": np.random.normal(650, 80, n),
+            "MW": np.random.normal(10.5, 0.7, n),
+            "ECD": np.random.normal(11.2, 0.8, n),
+            "GR": np.random.normal(85, 20, n),
+            "RHOB": np.random.normal(2.35, 0.1, n),
+            "NPHI": np.random.normal(0.32, 0.08, n),
+        })
 
-available_features = [c for c in df.columns if c != target_col]
+        df["ROP"] = (
+            0.9 * df["WOB"]
+            + 0.12 * df["RPM"]
+            - 0.006 * df["SPP"]
+            + 0.018 * df["FlowRate"]
+            - 1.8 * df["MW"]
+            - 1.2 * df["ECD"]
+            + np.random.normal(0, 3, n)
+        )
+
+        return df
+
+    if file.name.endswith(".xlsx"):
+        return pd.read_excel(file)
+    return pd.read_csv(file)
+
+df = load_data(uploaded_file)
+
+# =========================
+# DATA PREP
+# =========================
+numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+
+if len(numeric_cols) < 2:
+    st.error("Not enough numeric columns found in the dataset.")
+    st.stop()
 
 with st.sidebar:
-    st.markdown('<div class="sidebar-box">', unsafe_allow_html=True)
-    st.markdown("**Regression_Predictor**")
-
-    select_all = st.checkbox("Select all", value=True)
-
-    if select_all:
-        selected_features = st.multiselect(
-            "Features",
-            available_features,
-            default=available_features,
-            label_visibility="collapsed"
-        )
-    else:
-        selected_features = st.multiselect(
-            "Features",
-            available_features,
-            default=available_features[:4],
-            label_visibility="collapsed"
-        )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="sidebar-box">', unsafe_allow_html=True)
-    st.markdown("**RegressorModel**")
-    model_name = st.radio(
-        "",
-        ["DecisionTreeRegressor", "LinearRegression", "RandomForestRegressor", "SVR", "XGBoostRegressor"],
-        index=4,
-        label_visibility="collapsed"
+    target_col = st.selectbox(
+        "Select Target Column",
+        options=numeric_cols,
+        index=numeric_cols.index("ROP") if "ROP" in numeric_cols else 0
     )
-    st.markdown('</div>', unsafe_allow_html=True)
+
+    depth_candidates = [c for c in df.columns if "depth" in c.lower() or "md" in c.lower()]
+    default_depth = depth_candidates[0] if depth_candidates else df.columns[0]
+
+    depth_col = st.selectbox(
+        "Select Depth Column",
+        options=df.columns.tolist(),
+        index=df.columns.tolist().index(default_depth)
+    )
+
+    feature_options = [c for c in numeric_cols if c != target_col]
+
+    default_features = feature_options[:min(8, len(feature_options))]
+    selected_features = st.multiselect(
+        "Select Input Features",
+        options=feature_options,
+        default=default_features
+    )
+
+    model_name = st.selectbox(
+        "Select Model",
+        ["Random Forest", "Extra Trees", "Gradient Boosting", "Decision Tree", "Linear Regression"]
+    )
+
+    test_size = st.slider("Test Size", 0.1, 0.4, 0.2, 0.05)
 
 # =========================
-# MODEL MAPPING
+# MODEL SELECTION
 # =========================
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.svm import SVR
-
-try:
-    from xgboost import XGBRegressor
-    xgb_available = True
-except:
-    xgb_available = False
-
 def get_model(name):
-    if name == "DecisionTreeRegressor":
-        return DecisionTreeRegressor(max_depth=6, random_state=42)
-    elif name == "LinearRegression":
+    if name == "Random Forest":
+        return RandomForestRegressor(n_estimators=300, random_state=42)
+    elif name == "Extra Trees":
+        return ExtraTreesRegressor(n_estimators=300, random_state=42)
+    elif name == "Gradient Boosting":
+        return GradientBoostingRegressor(random_state=42)
+    elif name == "Decision Tree":
+        return DecisionTreeRegressor(random_state=42, max_depth=8)
+    elif name == "Linear Regression":
         return LinearRegression()
-    elif name == "RandomForestRegressor":
-        return RandomForestRegressor(n_estimators=200, max_depth=8, random_state=42)
-    elif name == "SVR":
-        return SVR()
-    elif name == "XGBoostRegressor":
-        if xgb_available:
-            return XGBRegressor(
-                n_estimators=250,
-                max_depth=5,
-                learning_rate=0.05,
-                subsample=0.9,
-                colsample_bytree=0.9,
-                random_state=42
-            )
-        else:
-            return GradientBoostingRegressor(random_state=42)
-    return LinearRegression()
+    return RandomForestRegressor(n_estimators=300, random_state=42)
 
-# =========================
-# TRAIN
-# =========================
 if len(selected_features) < 1:
     st.warning("Please select at least one feature.")
     st.stop()
 
-X = df[selected_features].copy()
-y = df[target_col].copy()
+data_model = df[[depth_col, target_col] + selected_features].copy()
+data_model = data_model.dropna(axis=0)
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X = data_model[selected_features]
+y = data_model[target_col]
+
+imputer = SimpleImputer(strategy="median")
+X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_imputed, y, test_size=test_size, random_state=42
+)
 
 model = get_model(model_name)
 model.fit(X_train, y_train)
@@ -263,102 +212,118 @@ r2 = r2_score(y_test, y_pred)
 rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 mae = mean_absolute_error(y_test, y_pred)
 
-# Feature importance
-importance_df = pd.DataFrame()
+# =========================
+# FEATURE IMPORTANCE
+# =========================
 if hasattr(model, "feature_importances_"):
-    importance_df = pd.DataFrame({
-        "Feature": selected_features,
-        "Importance": model.feature_importances_
-    }).sort_values("Importance", ascending=True)
+    importance = model.feature_importances_
 elif hasattr(model, "coef_"):
-    importance_df = pd.DataFrame({
-        "Feature": selected_features,
-        "Importance": np.abs(model.coef_)
-    }).sort_values("Importance", ascending=True)
+    importance = np.abs(model.coef_)
 else:
-    importance_df = pd.DataFrame({
-        "Feature": selected_features,
-        "Importance": np.random.rand(len(selected_features))
-    }).sort_values("Importance", ascending=True)
+    importance = np.zeros(len(selected_features))
 
-# Build comparison dataframe
-test_plot_df = X_test.copy()
-test_plot_df["Actual"] = y_test.values
-test_plot_df["Predicted"] = y_pred
+importance_df = pd.DataFrame({
+    "Feature": selected_features,
+    "Importance": importance
+}).sort_values("Importance", ascending=True)
 
-if "DEPTH_MD" not in test_plot_df.columns:
-    test_plot_df["DEPTH_MD"] = np.arange(len(test_plot_df))
-
-test_plot_df = test_plot_df.sort_values("DEPTH_MD")
+# =========================
+# DEPTH TREND DATA
+# =========================
+plot_df = data_model.loc[X_test.index, [depth_col, target_col]].copy()
+plot_df["Predicted_ROP"] = y_pred
+plot_df = plot_df.sort_values(depth_col)
 
 # =========================
 # MAIN PANEL
 # =========================
 st.markdown('<div class="main-panel">', unsafe_allow_html=True)
 
-col1, col2 = st.columns([1, 4])
+st.title("ROP Feature Importance Analysis")
+st.caption("Analyze drilling parameters affecting Rate of Penetration (ROP)")
 
-with col2:
-    top1, top2 = st.columns([1, 1])
+m1, m2, m3 = st.columns(3)
+with m1:
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">R² Score</div>
+        <div class="metric-value">{r2:.3f}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with m2:
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">RMSE</div>
+        <div class="metric-value">{rmse:.3f}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with m3:
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">MAE</div>
+        <div class="metric-value">{mae:.3f}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Feature Importance
-    with top1:
-        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
-        st.markdown('<div class="chart-title">Feature Importance</div>', unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True)
 
-        fig1, ax1 = plt.subplots(figsize=(6, 4))
-        ax1.barh(importance_df["Feature"], importance_df["Importance"], color="#8bb7d8", edgecolor="#6c9bbf")
-        ax1.set_xlabel("Importance")
-        ax1.set_ylabel("Features")
-        ax1.set_facecolor("#f8f7ea")
-        fig1.patch.set_facecolor("#f8f7ea")
-        ax1.grid(axis="x", linestyle="-", alpha=0.2)
-        st.pyplot(fig1, use_container_width=True)
+c1, c2 = st.columns(2)
 
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Cross Plot
-    with top2:
-        st.markdown('<div class="chart-box">', unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="chart-title">Cross Plot: NPHI vs. NPHI-Predicted<br>Model: {model_name}</div>',
-            unsafe_allow_html=True
-        )
-
-        fig2, ax2 = plt.subplots(figsize=(6, 4))
-        ax2.scatter(y_test, y_pred, s=8, color="blue", alpha=0.5, label="Blind Well")
-        minv = min(min(y_test), min(y_pred))
-        maxv = max(max(y_test), max(y_pred))
-        ax2.plot([minv, maxv], [minv, maxv], '--', color='tomato', linewidth=1.2, label='Perfect Fit')
-        ax2.set_xlabel("NPHI (Actual)")
-        ax2.set_ylabel("NPHI (Predicted)")
-        ax2.set_facecolor("#f8f7ea")
-        fig2.patch.set_facecolor("#f8f7ea")
-        ax2.grid(alpha=0.15)
-        ax2.legend(fontsize=8, loc="upper left")
-        ax2.text(minv + 0.02, maxv - 0.08, f"Blind Well R²: {r2:.2f}", fontsize=11, weight="bold")
-        st.pyplot(fig2, use_container_width=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Depth plot
+with c1:
     st.markdown('<div class="chart-box">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="chart-title">Line Plot: Depth vs. NPHI (Blind Well)</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="chart-title">Feature Importance for ROP Prediction</div>', unsafe_allow_html=True)
 
-    fig3, ax3 = plt.subplots(figsize=(12, 4))
-    ax3.plot(test_plot_df["DEPTH_MD"], test_plot_df["Actual"], color="#6a6bd1", linewidth=1, alpha=0.8, label="NPHI Actual")
-    ax3.plot(test_plot_df["DEPTH_MD"], test_plot_df["Predicted"], color="#ef7d57", linewidth=1, alpha=0.7, label="NPHI Predicted")
-    ax3.set_xlabel("DEPTH_MD")
-    ax3.set_ylabel("NPHI")
-    ax3.set_facecolor("#f8f7ea")
-    fig3.patch.set_facecolor("#f8f7ea")
-    ax3.grid(alpha=0.15)
-    ax3.legend(loc="upper right", fontsize=8)
-    st.pyplot(fig3, use_container_width=True)
-
+    fig1, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.barh(importance_df["Feature"], importance_df["Importance"], color="#8bb7d8", edgecolor="#6c9bbf")
+    ax1.set_xlabel("Importance")
+    ax1.set_ylabel("Features")
+    ax1.grid(axis="x", alpha=0.2)
+    ax1.set_facecolor("#f8f7ea")
+    fig1.patch.set_facecolor("#f8f7ea")
+    st.pyplot(fig1, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
+
+with c2:
+    st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+    st.markdown('<div class="chart-title">Actual vs Predicted ROP</div>', unsafe_allow_html=True)
+
+    fig2, ax2 = plt.subplots(figsize=(7, 5))
+    ax2.scatter(y_test, y_pred, s=15, color="blue", alpha=0.5)
+    minv = min(min(y_test), min(y_pred))
+    maxv = max(max(y_test), max(y_pred))
+    ax2.plot([minv, maxv], [minv, maxv], "--", color="tomato")
+    ax2.set_xlabel("Actual ROP")
+    ax2.set_ylabel("Predicted ROP")
+    ax2.grid(alpha=0.2)
+    ax2.set_facecolor("#f8f7ea")
+    fig2.patch.set_facecolor("#f8f7ea")
+    st.pyplot(fig2, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="chart-box">', unsafe_allow_html=True)
+st.markdown('<div class="chart-title">ROP vs Depth</div>', unsafe_allow_html=True)
+
+fig3, ax3 = plt.subplots(figsize=(12, 5))
+ax3.plot(plot_df[depth_col], plot_df[target_col], label="Actual ROP", color="#6a6bd1", linewidth=1)
+ax3.plot(plot_df[depth_col], plot_df["Predicted_ROP"], label="Predicted ROP", color="#ef7d57", linewidth=1)
+ax3.set_xlabel(depth_col)
+ax3.set_ylabel("ROP")
+ax3.legend()
+ax3.grid(alpha=0.2)
+ax3.set_facecolor("#f8f7ea")
+fig3.patch.set_facecolor("#f8f7ea")
+st.pyplot(fig3, use_container_width=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.subheader("Feature Importance Table")
+st.dataframe(importance_df.sort_values("Importance", ascending=False), use_container_width=True)
+
+csv = importance_df.sort_values("Importance", ascending=False).to_csv(index=False).encode("utf-8")
+st.download_button(
+    "Download Feature Importance CSV",
+    data=csv,
+    file_name="rop_feature_importance.csv",
+    mime="text/csv"
+)
 
 st.markdown('</div>', unsafe_allow_html=True)
