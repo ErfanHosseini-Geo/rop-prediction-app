@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold, RandomizedSearchCV
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression
@@ -14,37 +14,16 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OrdinalEncoder
+from scipy.stats import randint
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
-st.set_page_config(page_title="Advanced ROP Dashboard", layout="wide")
-st.title("Advanced ROP Prediction Dashboard")
-st.markdown("Development Well → Train/Test | Blind Well → Final Unseen Evaluation")
+st.set_page_config(page_title="ROP Journal Research Dashboard", layout="wide")
+st.title("Journal-Level ROP Prediction Dashboard")
 
 # =========================================================
-# SAFE COLUMN HANDLING
-# =========================================================
-def make_unique_columns(columns):
-    seen = {}
-    new_cols = []
-    for col in columns:
-        col = str(col).strip()
-        if col in seen:
-            seen[col] += 1
-            new_cols.append(f"{col}_{seen[col]}")
-        else:
-            seen[col] = 0
-            new_cols.append(col)
-    return new_cols
-
-def safe_boolean_mask(series):
-    if isinstance(series, pd.DataFrame):
-        series = series.iloc[:, 0]
-    return series
-
-# =========================================================
-# LOAD DATA
+# LOAD & CLEAN
 # =========================================================
 @st.cache_data
 def load_data(file):
@@ -53,23 +32,18 @@ def load_data(file):
     else:
         df = pd.read_excel(file)
 
-    df.columns = make_unique_columns(df.columns)
-    df = df.loc[:, ~df.columns.duplicated()].copy()
+    df.columns = pd.io.parsers.ParserBase({'names':df.columns})._maybe_dedup_names(df.columns)
+    df = df.loc[:, ~df.columns.duplicated()]
     df = df.reset_index(drop=True)
-
     return df
 
-uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("Upload Dataset", type=["csv","xlsx"])
 
 if uploaded_file is None:
-    st.info("Upload dataset to start.")
     st.stop()
 
 df = load_data(uploaded_file)
 df = df.replace(-999, np.nan)
-
-st.subheader("Data Preview")
-st.dataframe(df.head())
 
 # =========================================================
 # COLUMN SELECTION
@@ -78,69 +52,18 @@ well_col = st.sidebar.selectbox("Well Column", df.columns)
 target_col = st.sidebar.selectbox("Target Column (ROP)", df.columns)
 depth_col = st.sidebar.selectbox("Depth Column", df.columns)
 
-# Remove duplicates safely
-all_cols = list(dict.fromkeys(df.columns))
+candidate_features = [c for c in df.columns if c not in [well_col,target_col,depth_col]]
+selected_features = st.sidebar.multiselect("Features", candidate_features, default=candidate_features[:6])
 
-candidate_features = [
-    c for c in all_cols
-    if c not in [well_col, target_col, depth_col]
-]
-
-selected_features = st.sidebar.multiselect(
-    "Select Features",
-    candidate_features,
-    default=candidate_features[:5] if len(candidate_features) >= 5 else candidate_features
-)
-
-selected_features = list(dict.fromkeys(selected_features))
-
-# =========================================================
-# WELL SELECTION
-# =========================================================
 wells = sorted(df[well_col].astype(str).unique())
-
-if len(wells) < 2:
-    st.error("Need at least 2 wells.")
-    st.stop()
-
 dev_well = st.sidebar.selectbox("Development Well", wells)
 blind_well = st.sidebar.selectbox("Blind Well", [w for w in wells if w != dev_well])
 
 # =========================================================
-# MODEL SELECTION
+# DATA SPLIT
 # =========================================================
-model_names = st.sidebar.multiselect(
-    "Models",
-    ["Random Forest", "Extra Trees", "Gradient Boosting", "Linear Regression"],
-    default=["Random Forest"]
-)
-
-test_size = st.sidebar.slider("Test Size", 0.1, 0.4, 0.2)
-random_state = st.sidebar.number_input("Random State", value=42)
-
-if not st.sidebar.button("Run Modeling"):
-    st.stop()
-
-# =========================================================
-# SAFE DATA PREPARATION
-# =========================================================
-final_cols = [well_col, target_col, depth_col] + selected_features
-final_cols = list(dict.fromkeys(final_cols))
-
-work_df = df.loc[:, final_cols].copy()
-work_df = work_df.loc[:, ~work_df.columns.duplicated()]
-
-well_series = safe_boolean_mask(work_df[well_col])
-
-dev_mask = well_series.astype(str) == str(dev_well)
-blind_mask = well_series.astype(str) == str(blind_well)
-
-dev_df = work_df.loc[dev_mask].dropna(subset=[target_col])
-blind_df = work_df.loc[blind_mask].dropna(subset=[target_col])
-
-if dev_df.empty or blind_df.empty:
-    st.error("One of the wells has no valid data.")
-    st.stop()
+dev_df = df[df[well_col].astype(str)==str(dev_well)].dropna(subset=[target_col])
+blind_df = df[df[well_col].astype(str)==str(blind_well)].dropna(subset=[target_col])
 
 X_dev = dev_df[selected_features]
 y_dev = dev_df[target_col]
@@ -149,12 +72,10 @@ X_blind = blind_df[selected_features]
 y_blind = blind_df[target_col]
 depth_blind = blind_df[depth_col]
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X_dev, y_dev, test_size=test_size, random_state=random_state
-)
+X_train, X_test, y_train, y_test = train_test_split(X_dev,y_dev,test_size=0.2,random_state=42)
 
 # =========================================================
-# PREPROCESSOR (NO LEAKAGE)
+# PREPROCESSOR
 # =========================================================
 categorical_cols = X_train.select_dtypes(include=["object"]).columns.tolist()
 numeric_cols = [c for c in selected_features if c not in categorical_cols]
@@ -162,122 +83,124 @@ numeric_cols = [c for c in selected_features if c not in categorical_cols]
 preprocessor = ColumnTransformer([
     ("num", SimpleImputer(strategy="median"), numeric_cols),
     ("cat",
-        Pipeline([
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))
-        ]),
+     Pipeline([
+         ("imputer", SimpleImputer(strategy="most_frequent")),
+         ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value",unknown_value=-1))
+     ]),
      categorical_cols)
 ])
 
-preprocessor.fit(X_train)
-
-X_train = pd.DataFrame(preprocessor.transform(X_train), columns=numeric_cols + categorical_cols)
-X_test = pd.DataFrame(preprocessor.transform(X_test), columns=numeric_cols + categorical_cols)
-X_blind = pd.DataFrame(preprocessor.transform(X_blind), columns=numeric_cols + categorical_cols)
-
 # =========================================================
-# MODELING
+# MODELS & TUNING
 # =========================================================
-def get_model(name):
-    models = {
-        "Random Forest": RandomForestRegressor(n_estimators=200, random_state=random_state),
-        "Extra Trees": ExtraTreesRegressor(n_estimators=200, random_state=random_state),
-        "Gradient Boosting": GradientBoostingRegressor(n_estimators=200, random_state=random_state),
-        "Linear Regression": LinearRegression(),
-    }
-    return models[name]
-
-def metrics(y_true, y_pred):
-    return {
-        "R2": r2_score(y_true, y_pred),
-        "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
-        "MAE": mean_absolute_error(y_true, y_pred),
-    }
+models = {
+    "Random Forest": (
+        RandomForestRegressor(random_state=42),
+        {
+            "model__n_estimators": randint(100,400),
+            "model__max_depth": randint(5,30)
+        }
+    ),
+    "Extra Trees": (
+        ExtraTreesRegressor(random_state=42),
+        {
+            "model__n_estimators": randint(100,400),
+            "model__max_depth": randint(5,30)
+        }
+    ),
+    "Gradient Boosting": (
+        GradientBoostingRegressor(random_state=42),
+        {
+            "model__n_estimators": randint(100,400),
+            "model__max_depth": randint(2,6)
+        }
+    ),
+    "Linear Regression": (
+        LinearRegression(),
+        {}
+    )
+}
 
 results = []
-trained_models = {}
 
-for name in model_names:
-    model = get_model(name)
-    model.fit(X_train, y_train)
+for name,(model,param_dist) in models.items():
 
-    y_pred_test = model.predict(X_test)
-    y_pred_blind = model.predict(X_blind)
+    pipe = Pipeline([
+        ("preprocess", preprocessor),
+        ("model", model)
+    ])
 
-    test_m = metrics(y_test, y_pred_test)
-    blind_m = metrics(y_blind, y_pred_blind)
+    if param_dist:
+        search = RandomizedSearchCV(pipe,param_dist,n_iter=15,cv=5,n_jobs=-1,random_state=42)
+        search.fit(X_train,y_train)
+        best_model = search.best_estimator_
+    else:
+        best_model = pipe.fit(X_train,y_train)
+
+    # Cross-validation
+    kf = KFold(n_splits=5,shuffle=True,random_state=42)
+    cv_scores = []
+
+    for train_idx,val_idx in kf.split(X_train):
+        best_model.fit(X_train.iloc[train_idx],y_train.iloc[train_idx])
+        pred = best_model.predict(X_train.iloc[val_idx])
+        cv_scores.append(r2_score(y_train.iloc[val_idx],pred))
+
+    cv_mean = np.mean(cv_scores)
+
+    # Test
+    y_pred_test = best_model.predict(X_test)
+    y_pred_blind = best_model.predict(X_blind)
+
+    test_r2 = r2_score(y_test,y_pred_test)
+    blind_r2 = r2_score(y_blind,y_pred_blind)
+
+    # Ranking score
+    ranking_score = 0.5*cv_mean + 0.5*blind_r2
 
     results.append({
-        "Model": name,
-        "Test_R2": test_m["R2"],
-        "Test_RMSE": test_m["RMSE"],
-        "Test_MAE": test_m["MAE"],
-        "Blind_R2": blind_m["R2"],
-        "Blind_RMSE": blind_m["RMSE"],
-        "Blind_MAE": blind_m["MAE"],
+        "Model":name,
+        "CV_R2":cv_mean,
+        "Test_R2":test_r2,
+        "Blind_R2":blind_r2,
+        "Ranking_Score":ranking_score
     })
 
-    trained_models[name] = (model, y_pred_blind)
+    # Residual Plot
+    residuals = y_test - y_pred_test
+    fig,ax = plt.subplots()
+    ax.scatter(y_pred_test,residuals,alpha=0.5)
+    ax.axhline(0,color='red')
+    ax.set_xlabel("Predicted ROP")
+    ax.set_ylabel("Residual")
+    ax.set_title(f"{name} Residual Diagnostics")
+    st.pyplot(fig)
+
+    # Blind Well Depth Plot
+    fig2,ax2 = plt.subplots()
+    ax2.plot(y_blind,depth_blind,label="Actual")
+    ax2.plot(y_pred_blind,depth_blind,label="Predicted")
+    ax2.invert_yaxis()
+    ax2.set_xlabel("ROP")
+    ax2.set_ylabel("Depth")
+    ax2.set_title(f"{name} Blind Well Performance")
+    ax2.legend()
+    st.pyplot(fig2)
 
 results_df = pd.DataFrame(results)
+results_df = results_df.sort_values("Ranking_Score",ascending=False)
+results_df = results_df.round(4)
 
-# ✅ Safe Display (NO Styler)
-num_cols = results_df.select_dtypes(include=[np.number]).columns
-results_df[num_cols] = results_df[num_cols].round(4)
-
-st.subheader("Model Performance")
+st.subheader("Model Comparison & Ranking")
 st.dataframe(results_df)
 
 # =========================================================
-# FEATURE IMPORTANCE
+# PUBLICATION-READY STYLE
 # =========================================================
-for name in model_names:
-    model, _ = trained_models[name]
-    st.subheader(f"{name} Feature Importance")
-
-    if hasattr(model, "feature_importances_"):
-        imp = pd.DataFrame({
-            "Feature": X_train.columns,
-            "Importance": model.feature_importances_
-        }).sort_values("Importance", ascending=False)
-
-        fig, ax = plt.subplots()
-        ax.barh(imp["Feature"], imp["Importance"])
-        ax.invert_yaxis()
-        st.pyplot(fig)
-    else:
-        st.info("No feature importance available.")
-
-# =========================================================
-# SHAP (SAFE)
-# =========================================================
-for name in model_names:
-    model, _ = trained_models[name]
-    st.subheader(f"{name} SHAP Summary")
-
-    try:
-        explainer = shap.Explainer(model, X_train)
-        shap_values = explainer(X_test)
-
-        fig = plt.figure()
-        shap.summary_plot(shap_values, X_test, show=False)
-        st.pyplot(fig)
-        plt.close()
-    except Exception:
-        st.info("SHAP not supported for this model.")
-
-# =========================================================
-# DOWNLOAD MODEL
-# =========================================================
-for name in model_names:
-    model, _ = trained_models[name]
-
-    buffer = io.BytesIO()
-    joblib.dump(model, buffer)
-    buffer.seek(0)
-
-    st.download_button(
-        label=f"Download {name} Model (.pkl)",
-        data=buffer,
-        file_name=f"{name.replace(' ','_').lower()}_model.pkl"
-    )
+plt.style.use("seaborn-v0_8-paper")
+fig,ax = plt.subplots(figsize=(6,4))
+ax.bar(results_df["Model"],results_df["Ranking_Score"])
+ax.set_ylabel("Ranking Score")
+ax.set_title("Model Ranking Comparison")
+plt.xticks(rotation=45)
+st.pyplot(fig)
