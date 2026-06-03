@@ -45,13 +45,25 @@ def make_unique_columns(columns):
     return new_cols
 
 
+def unique_list(seq):
+    seen = set()
+    out = []
+    for item in seq:
+        if item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
 @st.cache_data
 def load_data(uploaded_file):
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
+
     df.columns = make_unique_columns(df.columns)
+    df = df.loc[:, ~pd.Index(df.columns).duplicated()].copy()
     return df
 
 
@@ -89,6 +101,7 @@ def safe_depth_sort_plot(ax, df_plot, depth_col, actual_col, pred_col=None, titl
     if pred_col is not None:
         cols.append(pred_col)
 
+    cols = unique_list(cols)
     temp = df_plot[cols].dropna().sort_values(depth_col)
 
     ax.plot(temp[actual_col], temp[depth_col], label="Actual", linewidth=1.8)
@@ -114,8 +127,10 @@ class DataCleaner:
         iqr_factor=1.5,
         iso_contamination=0.03,
     ):
-        self.numeric_cols = list(numeric_cols)
-        self.categorical_cols = list(categorical_cols)
+        self.numeric_cols = unique_list(list(numeric_cols))
+        self.categorical_cols = unique_list(list(categorical_cols))
+        self.categorical_cols = [c for c in self.categorical_cols if c not in self.numeric_cols]
+
         self.missing_method = missing_method
         self.outlier_method = outlier_method
         self.z_thresh = z_thresh
@@ -153,22 +168,32 @@ class DataCleaner:
             ]
         )
 
+        transformers = []
+
+        if len(self.numeric_cols) > 0:
+            transformers.append(("num", num_imputer, self.numeric_cols))
+
+        if len(self.categorical_cols) > 0:
+            transformers.append(("cat", cat_pipe, self.categorical_cols))
+
         self.preprocessor = ColumnTransformer(
-            transformers=[
-                ("num", num_imputer, self.numeric_cols),
-                ("cat", cat_pipe, self.categorical_cols),
-            ],
+            transformers=transformers,
             remainder="drop",
         )
 
     def fit(self, X):
         X = X.copy()
+        X = X.loc[:, ~pd.Index(X.columns).duplicated()].copy()
+
+        expected_cols = unique_list(self.numeric_cols + self.categorical_cols)
+        X = X[expected_cols].copy()
+
         self._build_preprocessor()
 
         missing_before = int(X.isna().sum().sum())
 
         X_imp = self.preprocessor.fit_transform(X)
-        all_cols = self.numeric_cols + self.categorical_cols
+        all_cols = unique_list(self.numeric_cols + self.categorical_cols)
         X_imp_df = pd.DataFrame(X_imp, columns=all_cols, index=X.index)
 
         missing_after = int(X_imp_df.isna().sum().sum())
@@ -224,7 +249,11 @@ class DataCleaner:
 
     def transform(self, X, apply_row_removal=False):
         X = X.copy()
-        all_cols = self.numeric_cols + self.categorical_cols
+        X = X.loc[:, ~pd.Index(X.columns).duplicated()].copy()
+
+        all_cols = unique_list(self.numeric_cols + self.categorical_cols)
+        X = X[all_cols].copy()
+
         X_imp = self.preprocessor.transform(X)
         X_df = pd.DataFrame(X_imp, columns=all_cols, index=X.index)
 
@@ -266,6 +295,7 @@ uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel file", type=["csv"
 if uploaded_file is not None:
     df = load_data(uploaded_file)
     df = df.replace(-999, np.nan)
+    df = df.loc[:, ~pd.Index(df.columns).duplicated()].copy()
 
     st.subheader("Dataset Preview")
     st.dataframe(df.head())
@@ -281,6 +311,7 @@ if uploaded_file is not None:
         default_depth = possible_depth_cols[0]
     else:
         default_depth = df.columns[0]
+
     depth_col = st.sidebar.selectbox(
         "Select Depth Column for Plotting",
         df.columns,
@@ -353,7 +384,20 @@ if uploaded_file is not None:
             st.error("Please select at least one model.")
             st.stop()
 
-        work_df = df[[well_col, target_col, depth_col] + selected_features].copy()
+        selected_features = unique_list(selected_features)
+        selected_features = [c for c in selected_features if c not in [well_col, target_col]]
+        selected_features = [c for c in selected_features if c in df.columns]
+
+        if len(selected_features) == 0:
+            st.error("No valid feature columns remain after removing duplicates and protected columns.")
+            st.stop()
+
+        base_cols = [well_col, target_col, depth_col] + selected_features
+        final_cols = unique_list(base_cols)
+        final_cols = [c for c in final_cols if c in df.columns]
+
+        work_df = df[final_cols].copy()
+        work_df = work_df.loc[:, ~pd.Index(work_df.columns).duplicated()].copy()
 
         dev_df = work_df[work_df[well_col].astype(str) == str(dev_well)].copy()
         blind_df = work_df[work_df[well_col].astype(str) == str(blind_well)].copy()
@@ -373,12 +417,18 @@ if uploaded_file is not None:
 
         X_blind_raw = blind_df[selected_features].copy()
         y_blind = blind_df[target_col].copy()
-
         depth_blind = blind_df[depth_col].copy()
 
+        X_dev = X_dev.loc[:, ~pd.Index(X_dev.columns).duplicated()].copy()
+        X_blind_raw = X_blind_raw.loc[:, ~pd.Index(X_blind_raw.columns).duplicated()].copy()
+
         categorical_candidates = [c for c in ["FORMATION", "GROUP"] if c in selected_features]
-        categorical_cols = [c for c in categorical_candidates if c in X_dev.columns]
-        numeric_cols = [c for c in selected_features if c not in categorical_cols]
+        categorical_cols = unique_list([c for c in categorical_candidates if c in X_dev.columns])
+        numeric_cols = unique_list([c for c in selected_features if c not in categorical_cols])
+
+        feature_union = unique_list(numeric_cols + categorical_cols)
+        X_dev = X_dev[feature_union].copy()
+        X_blind_raw = X_blind_raw[feature_union].copy()
 
         X_train_raw, X_test_raw, y_train_raw, y_test_raw, idx_train, idx_test = train_test_split(
             X_dev,
@@ -390,6 +440,9 @@ if uploaded_file is not None:
 
         depth_train = dev_df.loc[idx_train, depth_col]
         depth_test = dev_df.loc[idx_test, depth_col]
+
+        X_train_raw = X_train_raw.loc[:, ~pd.Index(X_train_raw.columns).duplicated()].copy()
+        X_test_raw = X_test_raw.loc[:, ~pd.Index(X_test_raw.columns).duplicated()].copy()
 
         cleaner = DataCleaner(
             numeric_cols=numeric_cols,
@@ -469,7 +522,7 @@ if uploaded_file is not None:
                 "y_pred_test": y_pred_test,
                 "y_pred_blind": y_pred_blind,
                 "cleaner": cleaner,
-                "features": selected_features,
+                "features": feature_union,
                 "numeric_cols": numeric_cols,
                 "categorical_cols": categorical_cols,
             }
@@ -594,7 +647,10 @@ if uploaded_file is not None:
 
                 try:
                     sample_n = min(200, len(obj["X_test"]))
-                    X_shap = obj["X_test"].sample(sample_n, random_state=42) if len(obj["X_test"]) > sample_n else obj["X_test"]
+                    if len(obj["X_test"]) > sample_n:
+                        X_shap = obj["X_test"].sample(sample_n, random_state=42)
+                    else:
+                        X_shap = obj["X_test"]
 
                     explainer = shap.Explainer(model, obj["X_train"])
                     shap_values = explainer(X_shap)
