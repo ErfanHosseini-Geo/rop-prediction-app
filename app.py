@@ -1,244 +1,307 @@
 import streamlit as st
-import pandas as pd 
-import numpy as np 
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
-import seaborn as sns
+
 from sklearn.model_selection import train_test_split
-from sklearn import neighbors
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.svm import LinearSVR
-from sklearn import svm
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.metrics import r2_score
-from sklearn.metrics import mean_squared_error
-from sklearn.preprocessing import StandardScaler
-from sklearn import linear_model
-from sklearn.ensemble import AdaBoostRegressor
-from sklearn.linear_model import TweedieRegressor
-from sklearn.linear_model import SGDRegressor
-
-########################################################################
-
-st.markdown('## **Various ML Models to Predict a Well Log**')
-st.markdown('### **Predict Neutron Porosity (NPHI) from other well logs using various machine learning algorithms, adjuct hyper-parameters.**') 
-st.markdown(" Adjuct hyper-parameters to see the model performances. \
- For additional information  please contact *ryan.mardani@dataenergy.ca* or visit the website: https://dataenergy.ca")
-st.sidebar.header('User Input')
-st.sidebar.markdown('GR, RHOB, DTC, and SP logs are used as predictors to target NPHI log data.')
-st.sidebar.markdown('[Download input data](https://raw.githubusercontent.com/mardani72/Web_App_ML_Log_streamlit/main/log_force.csv)')
-
-#########################################################################
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
 
 
+# -----------------------------
+# Page config
+# -----------------------------
+st.set_page_config(page_title="ROP Prediction App", layout="wide")
 
-url = "https://raw.githubusercontent.com/mardani72/Web_App_ML_Log_streamlit/main/log_force.csv"
-df1 = pd.read_csv(url)
-sample_rate = st.sidebar.slider('Sample every ... point (select larger values for faster run):', 1, 30, 15)
-df = df1.iloc[::sample_rate,:]
-st.sidebar.write('Data Samples:', df.shape[0])
-############################################################# data prepration for keep out set
-blind = df[df['WELL'] == '15/9-13']
-training_data = df[df['WELL'] != '15/9-13']
+st.title("ROP Prediction Dashboard")
+st.markdown("Upload your Excel/CSV file and predict **ROP** using machine learning models.")
 
-X = training_data[["GR","RHOB","DTC","SP"]].values
-y = training_data['NPHI'].values
 
-X_blind = blind[["GR","RHOB","DTC","SP"]].values
-y_blind = blind['NPHI'].values
+# -----------------------------
+# Helpers
+# -----------------------------
+def make_unique_columns(columns):
+    """
+    Make duplicate/empty column names unique.
+    """
+    seen = {}
+    new_cols = []
 
-############################################################## Standardization
-scaler = StandardScaler()
-X = scaler.fit_transform(X)
-X_b = scaler.fit_transform(X_blind)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    for i, col in enumerate(columns):
+        if col is None or str(col).strip() == "" or str(col).startswith("Unnamed"):
+            col = f"Unnamed_{i}"
 
-st.sidebar.markdown('### Machine Learning Algorithm')
-regression_name = st.sidebar.selectbox('', ("Aad Boost", "Neural Network (MLP)", 'KNN', 'SVM',
-	'BAYS','Decision trees', 'SGD'))
+        col = str(col).strip()
 
-def add_parameter_ui(reg_name):
-	params = dict()
-	
-	if reg_name == 'Aad Boost':
-		n_estimators = st.sidebar.slider("n_estimators", 50, 500,100)
-		learning_rate = st.sidebar.slider("learning_rate", 0.1, 10.0, 1.0)
-		params['n_estimators'] = n_estimators
-		params['learning_rate'] = learning_rate
+        if col in seen:
+            seen[col] += 1
+            new_cols.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            new_cols.append(col)
 
-	elif reg_name =='Neural Network (MLP)':
-		max_iter = st.sidebar.slider("max_iter", 10, 300, 100)
-		params['max_iter'] = max_iter
-		batch_size = st.sidebar.slider("batch_size", 2, 30, 10)
-		params['batch_size'] = batch_size
+    return new_cols
 
-	elif reg_name =='KNN':
-		K = st.sidebar.slider("K", 1, 15, 5)
-		params['K'] = K
 
-	elif reg_name == 'SVM':
-		C = st.sidebar.slider("C", 0.1 , 10.0)
-		epsilon = st.sidebar.slider("epsilon", 0.01 , 0.09)
-		params['C'] = C
-		params['epsilon'] = epsilon
+@st.cache_data
+def load_data(uploaded_file):
+    file_name = uploaded_file.name.lower()
 
-	elif reg_name == 'BAYS':
-		n_iter = st.sidebar.slider("n_iter", 100 , 1000,200)
-		params['n_iter'] = n_iter
-
-	elif reg_name == 'SGD':
-		eta0 = st.sidebar.slider("eta0", 0.001 , 1.0, 0.1)
-		params['eta0'] = eta0
-
-	else:
-		max_depth = st.sidebar.slider("max_depth", 2 , 30)
-		max_features = st.sidebar.slider("max_features", 1 , 4)
-		params['max_depth'] = max_depth
-		params['max_features'] = max_features
-	
-	return params
-
-params = add_parameter_ui(regression_name)
-
-def get_regression(reg_name, params):
-    reg = None
-
-    if reg_name == 'Aad Boost':
-    	reg = AdaBoostRegressor(n_estimators=params['n_estimators'], learning_rate=params['learning_rate'])
-
-    elif reg_name == 'Neural Network (MLP)':
-    	reg = MLPRegressor(max_iter=params['max_iter'], batch_size=params['batch_size'], random_state=42)
-    
-    elif reg_name == 'KNN':
-        reg = KNeighborsRegressor(n_neighbors=params['K'])
-    elif reg_name == 'SVM':
-        reg = svm.SVR(C=params['C'], epsilon=params['epsilon']) 
-
-    elif reg_name == 'BAYS':
-        reg = linear_model.BayesianRidge(n_iter=params['n_iter']) 
-    elif reg_name == 'SGD':
-        reg = linear_model.SGDRegressor(eta0=params['eta0']) 
+    if file_name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    elif file_name.endswith(".xlsx") or file_name.endswith(".xls"):
+        df = pd.read_excel(uploaded_file)
     else:
-        reg = DecisionTreeRegressor(max_features=params['max_features'], 
-            max_depth=params['max_depth'], random_state=42)
-    return reg
+        raise ValueError("Unsupported file format. Please upload CSV or Excel.")
 
-reg = get_regression(regression_name, params)
-
-reg.fit(X_train, y_train)
-y_pred = reg.predict(X_test)
-R2 = r2_score(y_test, y_pred)
+    df.columns = make_unique_columns(df.columns)
+    return df
 
 
-
-############################################################ examine models with blind data
-y_pred_b = reg.predict(X_b)
-R2_b = r2_score(y_blind, y_pred_b)
-blind['Pred_NPHI'] =  y_pred_b
-###################################################################################
-Depth_b = blind.DEPTH_MD.values
-GR_b = blind.GR.values
-RHOB_b = blind.RHOB.values
-NPHI_b = blind.NPHI.values
-DTC_b = blind.DTC.values
-SP_b = blind.SP.values
-
-fig = plt.figure()
-
-gs1 = GridSpec(1, 5, left=0.05, right=0.68, hspace=0.4,wspace=0.1)
-ax1 = fig.add_subplot(gs1[0])
-ax2 = fig.add_subplot(gs1[1])
-ax3 = fig.add_subplot(gs1[2])
-ax4 = fig.add_subplot(gs1[3])
-ax5 = fig.add_subplot(gs1[4])
-
-gs2 = GridSpec(2, 1, left=0.75, right=0.98, hspace=0.4, wspace=0.1)
-ax6 = fig.add_subplot(gs2[0])
-ax7 = fig.add_subplot(gs2[1])
-
-ax1.plot(GR_b, Depth_b, color='darkgreen', alpha=.8, lw=0.7, ls= '-')
-ax1.set_title('GR', fontsize=8, color='darkgreen', fontweight='bold')
-ax1.invert_yaxis()
-ax1.set_ylabel('Depth(m)', fontsize=9)
-ax1.grid(True, color='0.7', dashes=(5,2,1,2) )
-ax1.set_facecolor('#F8F8FF')
-ax1.tick_params(axis="x", labelsize=6)
-ax1.tick_params(axis="y", labelsize=7)
-
-ax2.plot(RHOB_b, Depth_b, color='darkgreen', alpha=.8, lw=0.7, ls= '-')
-ax2.set_title('RHOB', fontsize=8, color='darkgreen',fontweight='bold')
-ax2.invert_yaxis()
-ax2.grid(True, color='0.7', dashes=(5,2,1,2) )
-ax2.set_facecolor('#F8F8FF')
-ax2.tick_params(axis="x", labelsize=6)
-ax2.set_yticklabels([])
-
-ax3.plot(DTC_b, Depth_b, color='darkgreen', alpha=.8, lw=0.7, ls= '-')
-ax3.set_title('DTC', fontsize=8, color='darkgreen', fontweight='bold')
-ax3.invert_yaxis()
-ax3.grid(True, color='0.7', dashes=(5,2,1,2) )
-ax3.set_facecolor('#F8F8FF')
-ax3.tick_params(axis="x", labelsize=6)
-ax3.set_yticklabels([])
-
-ax4.plot(SP_b, Depth_b, color='darkgreen', alpha=.8, lw=0.7, ls= '-')
-ax4.set_title('SP', fontsize=8, color='darkgreen', fontweight='bold')
-ax4.invert_yaxis()
-ax4.grid(True, color='0.7', dashes=(5,2,1,2) )
-ax4.set_facecolor('#F8F8FF')
-ax4.tick_params(axis="x", labelsize=6)
-ax4.set_yticklabels([])
-
-ax5.plot(NPHI_b, Depth_b, color='mediumblue', alpha=.9, lw=0.6, ls= '-')
-ax5.plot(y_pred_b, Depth_b, color='orangered', alpha=.9, lw=0.9, ls= '-')
-ax5.set_title('NPHI', fontsize=8, color='mediumblue', fontweight='bold')
-ax5.invert_yaxis()
-ax5.grid(True, color='0.7', dashes=(5,2,1,2) )
-ax5.set_facecolor('#F8F8FF')
-ax5.tick_params(axis="x", labelsize=6)
-ax5.text(0.05, 1400, 'Pred. NPHI', color='orangered', fontsize=6,fontweight='bold', bbox={'alpha': 0.001, 'pad': 1})
-ax5.set_yticklabels([])
+def get_model(model_name, random_state, n_estimators, max_depth):
+    if model_name == "Random Forest":
+        return RandomForestRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth if max_depth > 0 else None,
+            random_state=random_state,
+            n_jobs=-1
+        )
+    elif model_name == "Extra Trees":
+        return ExtraTreesRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth if max_depth > 0 else None,
+            random_state=random_state,
+            n_jobs=-1
+        )
+    elif model_name == "Gradient Boosting":
+        return GradientBoostingRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth if max_depth > 0 else 3,
+            random_state=random_state
+        )
+    elif model_name == "Linear Regression":
+        return LinearRegression()
+    else:
+        raise ValueError("Unknown model selected.")
 
 
-sns.distplot(blind.NPHI, ax = ax6)
-sns.distplot(blind.Pred_NPHI, ax = ax6)
-ax6.set_title('NPHI Porosity Distribution', fontsize=7, color='k', fontweight='bold')
-ax6.set_facecolor('#F8F8FF')
-ax6.text(0.005, 18, 'Predicted NPHI', color='orangered', fontsize=6, fontweight='bold', bbox={'alpha': 0.001, 'pad': 1})
-ax6.text(0.005, 16.5, 'True NPHI', color='cornflowerblue', fontsize=6,fontweight='bold', bbox={'alpha': 0.001, 'pad': 1})
-ax6.tick_params(axis="x", labelsize=6)
-ax6.tick_params(axis="y", labelsize=6)
-ax6.set_xlabel('NPHI', fontsize=6)
-ax6.set_ylim([0, 20])
+def safe_rmse(y_true, y_pred):
+    return np.sqrt(mean_squared_error(y_true, y_pred))
 
 
-sns.regplot(x = 'NPHI', y ='Pred_NPHI', data = blind, marker='*', color='royalblue', scatter_kws={'s': blind['NPHI']},
- line_kws={"color": "gray", 'lw':'0.7'}, ax= ax7)
-ax7.set_title('True NPHI Vs. Prediction', fontsize=7, color='k', fontweight='bold')
-ax7.annotate("R2 = {:.3f}".format(r2_score(y_blind, y_pred_b)), (0.06, 0.5), fontsize=6.5)
-ax7.grid(True, color='0.9', dashes=(5,2,1,2) )
-ax7.set_facecolor('#F8F8FF')
-ax7.tick_params(axis="x", labelsize=6)
-ax7.tick_params(axis="y", labelsize=6)
-ax7.set_ylabel('Pred NPHI', fontsize=6)
-ax7.set_xlabel('True NPHI', fontsize=6)
+# -----------------------------
+# Sidebar
+# -----------------------------
+st.sidebar.header("Settings")
 
-st.pyplot(fig)
+uploaded_file = st.sidebar.file_uploader(
+    "Upload Excel or CSV file",
+    type=["csv", "xlsx", "xls"]
+)
+
+model_name = st.sidebar.selectbox(
+    "Select Model",
+    ["Random Forest", "Extra Trees", "Gradient Boosting", "Linear Regression"]
+)
+
+test_size = st.sidebar.slider("Test Size", 0.1, 0.4, 0.2, 0.05)
+random_state = st.sidebar.number_input("Random State", min_value=0, value=42, step=1)
+
+if model_name != "Linear Regression":
+    n_estimators = st.sidebar.slider("n_estimators", 50, 500, 200, 50)
+    max_depth = st.sidebar.slider("max_depth (0 = None)", 0, 30, 10, 1)
+else:
+    n_estimators = 100
+    max_depth = 0
+
+run_button = st.sidebar.button("Run Model")
 
 
-st.write(f'Regressor Model = {regression_name}')
-st.write(f'R2 Score (model) =', R2)
-st.write(f'*R2 Score (Blind) =', R2_b)
-st.markdown('*Blind data is a single well data that was involved in the modeling process; used for prediction evaluation purposes.')
-st.markdown('To speed up computation, we used a coarse sampling of data to decrease waiting time to see the result.')
+# -----------------------------
+# Main
+# -----------------------------
+if uploaded_file is not None:
+    try:
+        df = load_data(uploaded_file)
 
-st.markdown('### **About dataset:**')
-st.markdown('The original dataset belongs to [Force 2020 comptetion](https://zenodo.org/record/4351156)')
-st.markdown('You can find more data here: https://www.dataenergy.ca/opendata ')
-st.markdown('Looking at the summary of the dataset has shown that NPHI log is one of the most important data that is missing for some intervals.\
- We selected 3 wells (considering calculation cost) and used two of them for training and kept out one for the blind test (15/9-13) which is plotted above.')
+        st.subheader("Uploaded Data Preview")
+        st.dataframe(df.head())
+        st.write("Shape:", df.shape)
 
-st.dataframe(df1.iloc[0:10,:])
+        # Check target
+        if "ROP" not in df.columns:
+            st.error("Column 'ROP' was not found in your uploaded file.")
+            st.stop()
 
-st.write('Shape of dataset:', df.shape)
+        # Default columns to exclude
+        exclude_cols_default = []
+        for c in ["ROP", "WELL", "GROUP", "FORMATION", "FORCE_2020_LITHOFACIES_LITHOLOGY"]:
+            if c in df.columns:
+                exclude_cols_default.append(c)
+
+        st.subheader("Feature Selection")
+
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+        candidate_features = [c for c in numeric_cols if c != "ROP"]
+
+        selected_features = st.multiselect(
+            "Select input features",
+            options=candidate_features,
+            default=candidate_features
+        )
+
+        depth_col = "DEPTH_MD" if "DEPTH_MD" in df.columns else None
+
+        if len(selected_features) == 0:
+            st.warning("Please select at least one feature.")
+            st.stop()
+
+        model_df = df[selected_features + ["ROP"]].copy()
+
+        # Remove rows where target is missing
+        model_df = model_df.dropna(subset=["ROP"])
+
+        if model_df.shape[0] < 10:
+            st.error("Not enough rows after removing missing target values.")
+            st.stop()
+
+        X = model_df[selected_features]
+        y = model_df["ROP"]
+
+        if run_button:
+            model = get_model(model_name, random_state, n_estimators, max_depth)
+
+            pipeline = Pipeline([
+                ("imputer", SimpleImputer(strategy="median")),
+                ("model", model)
+            ])
+
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y,
+                test_size=test_size,
+                random_state=random_state
+            )
+
+            pipeline.fit(X_train, y_train)
+            y_pred = pipeline.predict(X_test)
+
+            r2 = r2_score(y_test, y_pred)
+            rmse = safe_rmse(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
+
+            st.subheader("Model Performance")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("R²", f"{r2:.4f}")
+            c2.metric("RMSE", f"{rmse:.4f}")
+            c3.metric("MAE", f"{mae:.4f}")
+
+            # Prediction table
+            results_df = X_test.copy()
+            results_df["Actual_ROP"] = y_test.values
+            results_df["Predicted_ROP"] = y_pred
+            if depth_col is not None and depth_col in df.columns and depth_col in results_df.columns:
+                pass
+
+            st.subheader("Prediction Results")
+            st.dataframe(results_df.head(20))
+
+            csv_out = results_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Predictions as CSV",
+                data=csv_out,
+                file_name="rop_predictions.csv",
+                mime="text/csv"
+            )
+
+            # -----------------------------
+            # Plots
+            # -----------------------------
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Actual vs Predicted")
+                fig1, ax1 = plt.subplots(figsize=(6, 5))
+                ax1.scatter(y_test, y_pred, alpha=0.7)
+                min_val = min(y_test.min(), y_pred.min())
+                max_val = max(y_test.max(), y_pred.max())
+                ax1.plot([min_val, max_val], [min_val, max_val], "r--")
+                ax1.set_xlabel("Actual ROP")
+                ax1.set_ylabel("Predicted ROP")
+                ax1.set_title("Actual vs Predicted")
+                st.pyplot(fig1)
+
+            with col2:
+                st.subheader("Residual Distribution")
+                residuals = y_test - y_pred
+                fig2, ax2 = plt.subplots(figsize=(6, 5))
+                ax2.hist(residuals, bins=30, edgecolor="black")
+                ax2.set_xlabel("Residual (Actual - Predicted)")
+                ax2.set_ylabel("Frequency")
+                ax2.set_title("Residual Distribution")
+                st.pyplot(fig2)
+
+            # Depth plot if DEPTH_MD selected
+            if depth_col is not None and depth_col in selected_features:
+                st.subheader("ROP vs Depth")
+
+                depth_test = X_test[depth_col].copy()
+                depth_plot_df = pd.DataFrame({
+                    "DEPTH_MD": depth_test,
+                    "Actual_ROP": y_test,
+                    "Predicted_ROP": y_pred
+                }).sort_values("DEPTH_MD")
+
+                fig3, ax3 = plt.subplots(figsize=(8, 8))
+                ax3.plot(depth_plot_df["Actual_ROP"], depth_plot_df["DEPTH_MD"], label="Actual ROP")
+                ax3.plot(depth_plot_df["Predicted_ROP"], depth_plot_df["DEPTH_MD"], label="Predicted ROP")
+                ax3.invert_yaxis()
+                ax3.set_xlabel("ROP")
+                ax3.set_ylabel("Depth")
+                ax3.set_title("ROP vs Depth")
+                ax3.legend()
+                st.pyplot(fig3)
+
+            # Feature importance
+            final_model = pipeline.named_steps["model"]
+            if hasattr(final_model, "feature_importances_"):
+                st.subheader("Feature Importance")
+                importance_df = pd.DataFrame({
+                    "Feature": selected_features,
+                    "Importance": final_model.feature_importances_
+                }).sort_values("Importance", ascending=False)
+
+                fig4, ax4 = plt.subplots(figsize=(8, 5))
+                ax4.barh(importance_df["Feature"], importance_df["Importance"])
+                ax4.invert_yaxis()
+                ax4.set_xlabel("Importance")
+                ax4.set_title("Feature Importance")
+                st.pyplot(fig4)
+
+                st.dataframe(importance_df)
+
+            elif hasattr(final_model, "coef_"):
+                st.subheader("Model Coefficients")
+                coef_df = pd.DataFrame({
+                    "Feature": selected_features,
+                    "Coefficient": final_model.coef_
+                }).sort_values("Coefficient", ascending=False)
+
+                fig5, ax5 = plt.subplots(figsize=(8, 5))
+                ax5.barh(coef_df["Feature"], coef_df["Coefficient"])
+                ax5.invert_yaxis()
+                ax5.set_xlabel("Coefficient")
+                ax5.set_title("Linear Model Coefficients")
+                st.pyplot(fig5)
+
+                st.dataframe(coef_df)
+
+    except Exception as e:
+        st.error(f"Error while processing file: {e}")
+
+else:
+    st.info("Please upload an Excel or CSV file from the sidebar to begin.")
